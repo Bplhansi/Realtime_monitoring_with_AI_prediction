@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>System monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#e9eef0;--panel:#f6f9fa;--ink:#12303a;--mute:#5d7882;--line:#c5d3d8;--live:#0e5e6f;--pred:#7a3fd1;--bad:#d1245a;--warn:#b86e00;--ok:#2a8a5a;--band:rgba(122,63,209,.14)}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1a1f;--panel:#13252c;--ink:#dcebef;--mute:#8aa6af;--line:#26414a;--live:#4fc3d9;--pred:#b48cf5;--bad:#ff5c8a;--warn:#f0a53c;--ok:#4ed08f;--band:rgba(180,140,245,.18)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.45}
+main{max-width:1000px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.4rem;margin:0 0 14px}
+.bar{display:flex;gap:14px;align-items:center;padding:14px 16px;border-radius:10px;background:var(--panel);border-left:6px solid var(--ok);margin-bottom:14px}
+.bar.warning{border-color:var(--warn)}.bar.critical,.bar.watch{border-color:var(--bad)}
+.bar span{color:var(--mute)}
+.card{background:var(--panel);border-radius:10px;padding:12px;margin-bottom:14px}
+.card h2{font-size:.95rem;margin:0 0 6px;font-weight:600}
+canvas{width:100%;display:block}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.ctl{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;align-items:center}
+button{font:inherit;padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button:hover{border-color:var(--live)}
+button:focus-visible{outline:3px solid var(--pred);outline-offset:2px}
+.conn{margin-left:auto;color:var(--mute);font-size:.85rem}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--mute);font-weight:500}
+.sev{font-weight:600}.sev.critical{color:var(--bad)}.sev.warning{color:var(--warn)}.sev.watch{color:var(--pred)}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>System monitor</h1>
+<div id="bar" class="bar"><b id="bt">Connecting</b><span id="bs"></span></div>
+<div class="ctl">
+  <button data-s="latency">Latency spike</button>
+  <button data-s="errors">Error burst</button>
+  <button data-s="drift">Slow degradation</button>
+  <button data-s="outage">Traffic outage</button>
+  <span class="conn" id="conn">offline</span>
+</div>
+<div class="card"><h2>p95 latency (ms), with 30 second forecast</h2><canvas id="c1" height="260"></canvas></div>
+<div class="two">
+  <div class="card"><h2>Error rate</h2><canvas id="c2" height="140"></canvas></div>
+  <div class="card"><h2>Requests per second</h2><canvas id="c3" height="140"></canvas></div>
+</div>
+<div class="card"><h2>Incidents</h2><div class="scroll"><table><thead><tr><th>Opened</th><th>Metric</th><th>Severity</th><th>Reason</th><th>Status</th></tr></thead><tbody id="inc"></tbody></table></div></div>
+</main>
+<script>
+const S={points:[],forecast:[],incidents:{},limits:{}};
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function draw(cv,key,o){
+  o=o||{};const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.getAttribute('height')*1;
+  cv.width=W*dpr;cv.height=H*dpr;const c=cv.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);
+  const pts=S.points,fc=o.forecast?S.forecast:[],N=120,T=N+fc.length,pad={l:42,r:8,t:8,b:6};
+  const vals=pts.map(p=>p[key]).filter(v=>v!==null);
+  let mx=Math.max(...vals,o.limit||0,...fc.map(f=>f.hi),1)*1.08,mn=0;
+  const X=i=>pad.l+i/(T-1)*(W-pad.l-pad.r),Y=v=>pad.t+(1-(v-mn)/(mx-mn))*(H-pad.t-pad.b);
+  c.font='11px system-ui';c.fillStyle=css('--mute');c.strokeStyle=css('--line');c.lineWidth=1;
+  for(let k=0;k<=3;k++){const v=mn+(mx-mn)*k/3,y=Y(v);c.beginPath();c.moveTo(pad.l,y);c.lineTo(W-pad.r,y);c.stroke();c.fillText(o.pct?(v*100).toFixed(0)+'%':v.toFixed(0),4,y+4);}
+  if(o.limit){c.strokeStyle=css('--bad');c.setLineDash([6,5]);c.beginPath();c.moveTo(pad.l,Y(o.limit));c.lineTo(W-pad.r,Y(o.limit));c.stroke();c.setLineDash([]);}
+  const off=N-pts.length;
+  if(fc.length&&pts.length){const x0=N-1,last=[...pts].reverse().find(p=>p[key]!==null);
+    if(last){c.fillStyle=css('--band');c.beginPath();c.moveTo(X(x0),Y(last[key]));fc.forEach((f,i)=>c.lineTo(X(x0+1+i),Y(f.hi)));for(let i=fc.length-1;i>=0;i--)c.lineTo(X(x0+1+i),Y(fc[i].lo));c.fill();
+    c.strokeStyle=css('--pred');c.lineWidth=2.5;c.setLineDash([2,5]);c.beginPath();c.moveTo(X(x0),Y(last[key]));fc.forEach((f,i)=>c.lineTo(X(x0+1+i),Y(f.m)));c.stroke();c.setLineDash([]);}}
+  c.strokeStyle=css('--live');c.lineWidth=2.2;c.beginPath();let pen=false;
+  pts.forEach((p,i)=>{const v=p[key];if(v===null){pen=false;return;}const x=X(off+i),y=Y(v);pen?c.lineTo(x,y):c.moveTo(x,y);pen=true;});c.stroke();
+  c.fillStyle=css('--bad');
+  pts.forEach((p,i)=>{const m=p.metrics[o.metric||key];if(m&&m.anomaly){c.beginPath();c.arc(X(off+i),Y(p[key]),4.5,0,7);c.fill();}});
+}
+
+function render(){
+  draw($('c1'),'p95_ms',{forecast:true,limit:S.limits.p95_ms});
+  draw($('c2'),'error_rate',{limit:S.limits.error_rate,pct:true});
+  draw($('c3'),'rps',{});
+  renderInc();
+}
+const esc=s=>String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+function renderInc(){
+  const list=Object.values(S.incidents).sort((a,b)=>b.id-a.id);
+  $('inc').innerHTML=list.length?list.map(i=>`<tr><td>${new Date(i.opened_at*1000).toLocaleTimeString()}</td><td>${esc(i.metric)}</td><td class="sev ${esc(i.severity)}">${esc(i.severity)}</td><td>${esc(i.reason)}</td><td>${i.resolved_at?'Resolved':'Open'}</td></tr>`).join(''):'<tr><td colspan="5">No incidents yet.</td></tr>';
+  const open=list.filter(i=>!i.resolved_at),bar=$('bar');
+  const rank={watch:1,warning:2,critical:3},worst=open.sort((a,b)=>rank[b.severity]-rank[a.severity])[0];
+  if(!S.points.length){return;}
+  bar.className='bar '+(worst?worst.severity:'');
+  $('bt').textContent=worst?open.length+' open incident'+(open.length>1?'s':'')+' ('+worst.severity+')':'All systems normal';
+  $('bs').textContent=worst?worst.reason:'No anomalies and no forecast breaches.';
+}
+async function init(){
+  const r=await (await fetch('/api/state')).json();
+  S.points=r.points;S.forecast=r.forecast;S.limits=r.limits;r.incidents.forEach(i=>S.incidents[i.id]=i);
+  render();connect();
+}
+function connect(){
+  const es=new EventSource('/api/stream');
+  es.onopen=()=>$('conn').textContent='live';
+  es.onerror=()=>$('conn').textContent='reconnecting…';
+  es.onmessage=e=>{const m=JSON.parse(e.data);
+    if(m.type==='point'){S.points.push(m.point);if(S.points.length>120)S.points.shift();S.forecast=m.forecast;render();}
+    else if(m.type==='incident'){S.incidents[m.incident.id]=m.incident;renderInc();}};
+}
+document.querySelectorAll('button[data-s]').forEach(b=>b.onclick=()=>fetch('/api/inject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario:b.dataset.s,seconds:b.dataset.s==='drift'?60:30})}));
+addEventListener('resize',render);
+init();
+</script>
+</body>
+</html>
